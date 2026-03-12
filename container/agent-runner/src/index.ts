@@ -448,6 +448,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__gmail__*',
+        'mcp__apple-calendar__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -466,6 +467,10 @@ async function runQuery(
         gmail: {
           command: 'npx',
           args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+        },
+        'apple-calendar': {
+          type: 'sse' as const,
+          url: 'http://host.docker.internal:8765/sse',
         },
       },
       hooks: {
