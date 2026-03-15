@@ -320,7 +320,10 @@ export class TelegramChannel implements Channel {
         const transcript = await transcribeAudioBuffer(buffer);
         if (transcript) {
           content = `[Voice: ${transcript}]`;
-          logger.info({ chatJid, length: transcript.length }, 'Transcribed Telegram voice message');
+          logger.info(
+            { chatJid, length: transcript.length },
+            'Transcribed Telegram voice message',
+          );
         }
       } catch (err) {
         logger.error({ err, chatJid }, 'Telegram voice transcription failed');
