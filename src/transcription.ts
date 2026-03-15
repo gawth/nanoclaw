@@ -52,6 +52,13 @@ async function transcribeWithOpenAI(
   }
 }
 
+export async function transcribeAudioBuffer(
+  buffer: Buffer,
+): Promise<string | null> {
+  if (!buffer || buffer.length === 0) return null;
+  return transcribeWithOpenAI(buffer, DEFAULT_CONFIG);
+}
+
 export async function transcribeAudioMessage(
   msg: WAMessage,
   sock: WASocket,

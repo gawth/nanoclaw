@@ -1,8 +1,12 @@
 import https from 'https';
+import path from 'path';
+
 import { Api, Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, GROUPS_DIR, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { processImage } from '../image.js';
+import { transcribeAudioBuffer } from '../transcription.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -16,6 +20,28 @@ export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+}
+
+/**
+ * Extract reply context from a replied-to message, returning a prefix string
+ * like `[Replying to @Name: "text"] ` so the agent sees what was being replied to.
+ */
+function getReplyContext(replyTo: any): string {
+  if (!replyTo) return '';
+  const name =
+    replyTo.from?.first_name ||
+    replyTo.from?.username ||
+    replyTo.from?.id?.toString() ||
+    'Unknown';
+  const text =
+    replyTo.text ||
+    replyTo.caption ||
+    (replyTo.photo ? '[Photo]' : null) ||
+    (replyTo.voice ? '[Voice]' : null) ||
+    (replyTo.video ? '[Video]' : null) ||
+    (replyTo.document ? '[Document]' : null) ||
+    '[message]';
+  return `[Replying to @${name}: "${text}"] `;
 }
 
 /**
@@ -85,7 +111,8 @@ export class TelegramChannel implements Channel {
       if (ctx.message.text.startsWith('/')) return;
 
       const chatJid = `tg:${ctx.chat.id}`;
-      let content = ctx.message.text;
+      let content =
+        getReplyContext(ctx.message.reply_to_message) + ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
         ctx.from?.first_name ||
@@ -193,9 +220,123 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const caption = ctx.message.caption ?? '';
+
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
+
+      const replyPrefix = getReplyContext(ctx.message.reply_to_message);
+      let content = replyPrefix + (caption ? `[Photo] ${caption}` : '[Photo]');
+
+      try {
+        // Pick the largest available photo size
+        const photos = ctx.message.photo;
+        const largest = photos[photos.length - 1];
+        const file = await this.bot!.api.getFile(largest.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          https.get(fileUrl, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          });
+        });
+
+        const groupDir = path.join(GROUPS_DIR, group.folder);
+        const result = await processImage(buffer, groupDir, caption);
+        if (result) content = replyPrefix + result.content;
+      } catch (err) {
+        logger.warn({ err, chatJid }, 'Telegram image download failed');
+      }
+
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender: ctx.from?.id?.toString() || '',
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+      });
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
+    this.bot.on('message:voice', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
+
+      let content = '[Voice Message - transcription unavailable]';
+
+      try {
+        const file = await this.bot!.api.getFile(ctx.message.voice.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          https.get(fileUrl, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          });
+        });
+
+        const transcript = await transcribeAudioBuffer(buffer);
+        if (transcript) {
+          content = `[Voice: ${transcript}]`;
+          logger.info({ chatJid, length: transcript.length }, 'Transcribed Telegram voice message');
+        }
+      } catch (err) {
+        logger.error({ err, chatJid }, 'Telegram voice transcription failed');
+        content = '[Voice Message - transcription failed]';
+      }
+
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender: ctx.from?.id?.toString() || '',
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+      });
+    });
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
