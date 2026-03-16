@@ -23,6 +23,28 @@ export interface TelegramChannelOpts {
 }
 
 /**
+ * Build a Telegram JID from a chat ID and optional forum topic (thread) ID.
+ * Non-topic messages: `tg:{chatId}`
+ * Topic messages:     `tg:{chatId}:{threadId}`
+ */
+function buildJid(chatId: number | string, threadId?: number): string {
+  return threadId ? `tg:${chatId}:${threadId}` : `tg:${chatId}`;
+}
+
+/**
+ * Parse a Telegram JID back to its components.
+ * Handles both `tg:{chatId}` and `tg:{chatId}:{threadId}`.
+ */
+function parseJid(jid: string): { chatId: string; threadId?: number } {
+  const rest = jid.replace(/^tg:/, '');
+  const colonIdx = rest.lastIndexOf(':');
+  if (colonIdx === -1) return { chatId: rest };
+  const chatId = rest.slice(0, colonIdx);
+  const threadId = Number(rest.slice(colonIdx + 1));
+  return { chatId, threadId: isNaN(threadId) ? undefined : threadId };
+}
+
+/**
  * Extract reply context from a replied-to message, returning a prefix string
  * like `[Replying to @Name: "text"] ` so the agent sees what was being replied to.
  */
@@ -86,17 +108,19 @@ export class TelegramChannel implements Channel {
       },
     });
 
-    // Command to get chat ID (useful for registration)
+    // Command to get chat ID (useful for registration).
+    // When used inside a forum topic, reports the topic-scoped JID.
     this.bot.command('chatid', (ctx) => {
-      const chatId = ctx.chat.id;
       const chatType = ctx.chat.type;
       const chatName =
         chatType === 'private'
           ? ctx.from?.first_name || 'Private'
           : (ctx.chat as any).title || 'Unknown';
+      const threadId = ctx.message?.message_thread_id;
+      const chatJid = buildJid(ctx.chat.id, threadId);
 
       ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
+        `Chat ID: \`${chatJid}\`\nName: ${chatName}\nType: ${chatType}${threadId ? `\nTopic ID: ${threadId}` : ''}`,
         { parse_mode: 'Markdown' },
       );
     });
@@ -106,11 +130,40 @@ export class TelegramChannel implements Channel {
       ctx.reply(`${ASSISTANT_NAME} is online.`);
     });
 
+    // Forward NanoClaw slash commands to the message handler
+    for (const cmd of ['remote_control', 'remote_control_end', 'compact']) {
+      this.bot.command(cmd, (ctx) => {
+        if (!ctx.message) return;
+        const threadId = ctx.message.message_thread_id;
+        const chatJid = buildJid(ctx.chat.id, threadId);
+        const group = this.opts.registeredGroups()[chatJid];
+        if (!group) return;
+        const timestamp = new Date(ctx.message.date * 1000).toISOString();
+        const senderName =
+          ctx.from?.first_name ||
+          ctx.from?.username ||
+          ctx.from?.id.toString() ||
+          'Unknown';
+        // Translate Telegram underscore command back to hyphen form
+        const content = `/${cmd.replace(/_/g, '-')}`;
+        this.opts.onMessage(chatJid, {
+          id: ctx.message.message_id.toString(),
+          chat_jid: chatJid,
+          sender: ctx.from?.id.toString() || '',
+          sender_name: senderName,
+          content,
+          timestamp,
+          is_from_me: false,
+        });
+      });
+    }
+
     this.bot.on('message:text', async (ctx) => {
       // Skip commands
       if (ctx.message.text.startsWith('/')) return;
 
-      const chatJid = `tg:${ctx.chat.id}`;
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = buildJid(ctx.chat.id, threadId);
       let content =
         getReplyContext(ctx.message.reply_to_message) + ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
@@ -129,8 +182,6 @@ export class TelegramChannel implements Channel {
           : (ctx.chat as any).title || chatJid;
 
       // Translate Telegram @bot_username mentions into TRIGGER_PATTERN format.
-      // Telegram @mentions (e.g., @andy_ai_bot) won't match TRIGGER_PATTERN
-      // (e.g., ^@Andy\b), so we prepend the trigger when the bot is @mentioned.
       const botUsername = ctx.me?.username?.toLowerCase();
       if (botUsername) {
         const entities = ctx.message.entities || [];
@@ -188,7 +239,8 @@ export class TelegramChannel implements Channel {
 
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
-      const chatJid = `tg:${ctx.chat.id}`;
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = buildJid(ctx.chat.id, threadId);
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -221,7 +273,8 @@ export class TelegramChannel implements Channel {
     };
 
     this.bot.on('message:photo', async (ctx) => {
-      const chatJid = `tg:${ctx.chat.id}`;
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = buildJid(ctx.chat.id, threadId);
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -279,9 +332,12 @@ export class TelegramChannel implements Channel {
         is_from_me: false,
       });
     });
+
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
+
     this.bot.on('message:voice', async (ctx) => {
-      const chatJid = `tg:${ctx.chat.id}`;
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = buildJid(ctx.chat.id, threadId);
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -340,6 +396,7 @@ export class TelegramChannel implements Channel {
         is_from_me: false,
       });
     });
+
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
@@ -382,18 +439,20 @@ export class TelegramChannel implements Channel {
     }
 
     try {
-      const numericId = jid.replace(/^tg:/, '');
+      const { chatId, threadId } = parseJid(jid);
+      const options = threadId ? { message_thread_id: threadId } : {};
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text);
+        await sendTelegramMessage(this.bot.api, chatId, text, options);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
           await sendTelegramMessage(
             this.bot.api,
-            numericId,
+            chatId,
             text.slice(i, i + MAX_LENGTH),
+            options,
           );
         }
       }
@@ -422,8 +481,9 @@ export class TelegramChannel implements Channel {
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
     if (!this.bot || !isTyping) return;
     try {
-      const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendChatAction(numericId, 'typing');
+      const { chatId, threadId } = parseJid(jid);
+      const options = threadId ? { message_thread_id: threadId } : {};
+      await this.bot.api.sendChatAction(chatId, 'typing', options);
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }

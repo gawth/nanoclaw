@@ -76,13 +76,40 @@ function createSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
+      folder TEXT NOT NULL,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
   `);
+
+  // Drop UNIQUE constraint on folder (migration for existing DBs).
+  // SQLite requires recreating the table to remove a constraint.
+  try {
+    const hasUniqueIndex = (database
+      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='registered_groups'`)
+      .get() as { sql: string } | undefined)?.sql?.includes('UNIQUE');
+    if (hasUniqueIndex) {
+      database.exec(`
+        CREATE TABLE registered_groups_new (
+          jid TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          folder TEXT NOT NULL,
+          trigger_pattern TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          container_config TEXT,
+          requires_trigger INTEGER DEFAULT 1,
+          is_main INTEGER DEFAULT 0
+        );
+        INSERT INTO registered_groups_new SELECT jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, COALESCE(is_main, 0) FROM registered_groups;
+        DROP TABLE registered_groups;
+        ALTER TABLE registered_groups_new RENAME TO registered_groups;
+      `);
+    }
+  } catch {
+    /* already migrated */
+  }
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
   try {

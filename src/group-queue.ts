@@ -34,6 +34,14 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+  // Folder-level locking: prevents concurrent containers sharing a session
+  private jidFolders = new Map<string, string>(); // jid → folder
+  private folderActive = new Map<string, string>(); // folder → active jid
+
+  /** Register the folder for a JID so the queue can enforce folder-level locking. */
+  registerFolder(groupJid: string, folder: string): void {
+    this.jidFolders.set(groupJid, folder);
+  }
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -68,6 +76,23 @@ export class GroupQueue {
       state.pendingMessages = true;
       logger.debug({ groupJid }, 'Container active, message queued');
       return;
+    }
+
+    // Folder-level lock: if another JID sharing this folder is active, queue
+    const folder = this.jidFolders.get(groupJid);
+    if (folder) {
+      const activeJid = this.folderActive.get(folder);
+      if (activeJid && activeJid !== groupJid) {
+        state.pendingMessages = true;
+        if (!this.waitingGroups.includes(groupJid)) {
+          this.waitingGroups.push(groupJid);
+        }
+        logger.debug(
+          { groupJid, folder, activeJid },
+          'Folder active on another JID, message queued',
+        );
+        return;
+      }
     }
 
     if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
@@ -204,6 +229,10 @@ export class GroupQueue {
     state.pendingMessages = false;
     this.activeCount++;
 
+    // Acquire folder-level lock
+    const folder = this.jidFolders.get(groupJid);
+    if (folder) this.folderActive.set(folder, groupJid);
+
     logger.debug(
       { groupJid, reason, activeCount: this.activeCount },
       'Starting container for group',
@@ -227,6 +256,10 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      // Release folder-level lock
+      if (folder && this.folderActive.get(folder) === groupJid) {
+        this.folderActive.delete(folder);
+      }
       this.drainGroup(groupJid);
     }
   }

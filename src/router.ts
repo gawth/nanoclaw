@@ -13,13 +13,18 @@ export function escapeXml(s: string): string {
 export function formatMessages(
   messages: NewMessage[],
   timezone: string,
+  ctx?: { groupName?: string; chatJid?: string },
 ): string {
   const lines = messages.map((m) => {
     const displayTime = formatLocalTime(m.timestamp, timezone);
     return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}</message>`;
   });
 
-  const header = `<context timezone="${escapeXml(timezone)}" />\n`;
+  const groupAttr = ctx?.groupName
+    ? ` group="${escapeXml(ctx.groupName)}"`
+    : '';
+  const jidAttr = ctx?.chatJid ? ` chat_jid="${escapeXml(ctx.chatJid)}"` : '';
+  const header = `<context timezone="${escapeXml(timezone)}"${groupAttr}${jidAttr} />\n`;
 
   return `${header}<messages>\n${lines.join('\n')}\n</messages>`;
 }
