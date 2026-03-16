@@ -78,7 +78,9 @@ export class GroupQueue {
       return;
     }
 
-    // Folder-level lock: if another JID sharing this folder is active, queue
+    // Folder-level lock: if another JID sharing this folder is active, queue.
+    // If that container is idle-waiting (done with its work), nudge it to close
+    // immediately so this JID doesn't wait out the full idle timeout.
     const folder = this.jidFolders.get(groupJid);
     if (folder) {
       const activeJid = this.folderActive.get(folder);
@@ -87,8 +89,12 @@ export class GroupQueue {
         if (!this.waitingGroups.includes(groupJid)) {
           this.waitingGroups.push(groupJid);
         }
+        const activeState = this.getGroup(activeJid);
+        if (activeState.idleWaiting) {
+          this.closeStdin(activeJid);
+        }
         logger.debug(
-          { groupJid, folder, activeJid },
+          { groupJid, folder, activeJid, nudged: activeState.idleWaiting },
           'Folder active on another JID, message queued',
         );
         return;

@@ -87,9 +87,13 @@ function createSchema(database: Database.Database): void {
   // Drop UNIQUE constraint on folder (migration for existing DBs).
   // SQLite requires recreating the table to remove a constraint.
   try {
-    const hasUniqueIndex = (database
-      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='registered_groups'`)
-      .get() as { sql: string } | undefined)?.sql?.includes('UNIQUE');
+    const hasUniqueIndex = (
+      database
+        .prepare(
+          `SELECT sql FROM sqlite_master WHERE type='table' AND name='registered_groups'`,
+        )
+        .get() as { sql: string } | undefined
+    )?.sql?.includes('UNIQUE');
     if (hasUniqueIndex) {
       database.exec(`
         CREATE TABLE registered_groups_new (
