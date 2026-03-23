@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "dayStart": 7,
+  "dayEnd": 22,
+  "dayIntervalMins": 60,
+  "nightIntervalMins": 240,
+  "agenda": [
+    "Check Apple Calendar for events in the next 3 hours and flag anything that needs attention",
+    "Review any scheduled tasks that are due or overdue",
+    "Note anything important for next check-in"
+  ]
+}
