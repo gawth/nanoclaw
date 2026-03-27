@@ -8,6 +8,7 @@ import {
   runContainerAgent,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { classifyModel } from './model-router.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -179,6 +180,7 @@ async function runTask(
         isMain,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
+        model: classifyModel(task.prompt),
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),

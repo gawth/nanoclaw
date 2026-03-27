@@ -4,6 +4,7 @@ import path from 'path';
 
 import { ASSISTANT_NAME, GROUPS_DIR, TIMEZONE } from './config.js';
 import { runContainerAgent } from './container-runner.js';
+import { MODEL_HAIKU } from './model-router.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -103,6 +104,7 @@ async function runHeartbeat(
         isMain: group.isMain === true,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
+        model: MODEL_HAIKU,
       },
       (proc, containerName) =>
         deps.onProcess(chatJid, proc, containerName, group.folder),

@@ -21,6 +21,7 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { selectModel } from './model-router.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
@@ -371,16 +372,19 @@ async function runAgent(
       }
     : undefined;
 
+  const { model, prompt: routedPrompt } = selectModel(prompt);
+
   try {
     const output = await runContainerAgent(
       group,
       {
-        prompt,
+        prompt: routedPrompt,
         sessionId,
         groupFolder: group.folder,
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        model,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
